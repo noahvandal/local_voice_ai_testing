@@ -36,7 +36,7 @@ class ConversationManager:
             vad_pre_buffer_duration=0.5
         )
         self.llm = HuggingFaceLLMHost(
-            model_name="Qwen/Qwen3-1.7B",
+            model_name="unsloth/Qwen3-1.7B-unsloth-bnb-4bit",
             system_prompt="You are a voice assistant. Be friendly, helpful, and concise in your responses."
         )
         self.tts = TextToSpeech()
@@ -81,7 +81,14 @@ class ConversationManager:
             self.is_playing_tts = True
         
         audio_np = audio_tensor.squeeze().cpu().numpy()
-        sd.play(audio_np, samplerate=sample_rate, callback=finished_callback)
+        sd.play(audio_np, samplerate=sample_rate)
+
+        # Start a background thread to monitor playback completion
+        def _wait_for_playback():
+            sd.wait()  # Blocks until playback is finished
+            finished_callback()
+
+        threading.Thread(target=_wait_for_playback, daemon=True).start()
 
     def _process_loop(self):
         """The main loop for processing transcriptions and generating responses."""
