@@ -1,8 +1,11 @@
 """
 Huggingface LLM host.
 """
+import unsloth
+from unsloth import FastLanguageModel
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
+
 
 class HuggingFaceLLMHost:
     """
@@ -12,28 +15,47 @@ class HuggingFaceLLMHost:
     provides an interface to send queries to the model.
     """
 
-    def __init__(self, model_name: str = "Qwen/Qwen3-1.7B", always_use_thinking: bool = False):
+    def __init__(self, model_name: str = "Qwen/Qwen3-1.7B", use_unsloth: bool = False, always_use_thinking: bool = False, system_prompt: str = None):
         """
         Initializes the LLM host.
 
         Args:
             model_name (str): The name of the model to load from Hugging Face.
+            use_unsloth (bool): Whether to use unsloth for loading quantized models.
+            always_use_thinking (bool): If True, forces the model to use thinking mode.
+            system_prompt (str): An initial system prompt for the model.
         """
         print(f"Loading model: {model_name}...")
         self.model_name = model_name
-        self.tokenizer = AutoTokenizer.from_pretrained(self.model_name)
-        self.model = AutoModelForCausalLM.from_pretrained(
-            self.model_name,
-            torch_dtype="auto",
-            device_map="auto"
-        )
-        self.history = []
+        self.use_unsloth = use_unsloth
+
+        if self.use_unsloth:
+            if FastLanguageModel is None:
+                raise ImportError("Unsloth is not installed. Please install it with 'pip install unsloth'.")
+            self.model, self.tokenizer = FastLanguageModel.from_pretrained(
+                model_name=self.model_name,
+                max_seq_length=2048,
+                load_in_4bit=True,
+            )
+        else:
+            self.tokenizer = AutoTokenizer.from_pretrained(self.model_name)
+            self.model = AutoModelForCausalLM.from_pretrained(
+                self.model_name,
+                torch_dtype="auto",
+                device_map="auto"
+            )
         self.always_use_thinking = always_use_thinking
+        self.system_prompt = system_prompt
+        self.history = []
+        if self.system_prompt:
+            self.history.append({"role": "system", "content": self.system_prompt})
         print("Model loaded successfully.")
 
     def clear_history(self):
         """Clears the conversation history."""
         self.history = []
+        if self.system_prompt:
+            self.history.append({"role": "system", "content": self.system_prompt})
         print("Conversation history cleared.")
 
     def query(self, prompt: str, enable_thinking: bool = True) -> str:
@@ -108,14 +130,29 @@ class HuggingFaceLLMHost:
         return content
 
 if __name__ == "__main__":
-    # Default to Qwen/Qwen3-1.7B, but allow overriding from command line
-    import sys
-    model_to_use = "Qwen/Qwen3-1.7B"
+    # --- Configuration ---
+    # Set the model to use from Hugging Face
+    model_to_use = "unsloth/Qwen3-1.7B-unsloth-bnb-4bit"
+    # Use unsloth for loading quantized models.
+    # For this to work, specify a 4-bit quantized model, like 'unsloth/Qwen3-1.7B-unsloth-bnb-4bit'
+    use_unsloth = True
+    # Always use thinking mode for the model
     always_use_thinking = False
-    if len(sys.argv) > 1:
-        model_to_use = sys.argv[1]
+    # -------------------
 
-    llm_host = HuggingFaceLLMHost(model_name=model_to_use, always_use_thinking=always_use_thinking)
+    if use_unsloth and "unsloth" not in model_to_use:
+        print(f"Warning: Using unsloth with model '{model_to_use}'. Consider specifying a 4-bit quantized model from unsloth for better performance, like 'unsloth/Qwen3-1.7B-unsloth-bnb-4bit'.")
+
+    system_prompt = "You are a helpful assistant. Your role is to be friendly and engaging. You have a playful demeanor \
+        and can be a little sarcastic and silly at times. Be a good friend, and help the user with their questions in a \
+            serious manner if the situation calls for it. Be brief and concise in your responses. Do NOT ramble"
+
+    llm_host = HuggingFaceLLMHost(
+        model_name=model_to_use,
+        use_unsloth=use_unsloth,
+        always_use_thinking=always_use_thinking,
+        system_prompt=system_prompt
+    )
 
     print("\nLLM Host is ready. Type your query and press Enter.")
     print("Type 'exit' or 'quit' to end the session. Type 'clear' to reset history.")
