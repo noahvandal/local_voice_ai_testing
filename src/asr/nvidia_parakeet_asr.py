@@ -29,7 +29,8 @@ class ParakeetASR:
         window_duration: float = 3.0,  # Duration of rolling window in seconds
         transcription_callback: Optional[Callable[[Dict], None]] = None,
         device: str = "cuda" if torch.cuda.is_available() else "cpu",
-        use_vad: bool = False
+        use_vad: bool = False,
+        vad_pre_buffer_duration: float = 0.5  # Seconds of pre-buffer
     ):
         """
         Initialize the Parakeet ASR system for real-time transcription.
@@ -43,6 +44,7 @@ class ParakeetASR:
             transcription_callback: Optional callback function for transcription results
             device: Device to run the model on ("cuda" or "cpu")
             use_vad: Whether to use Silero VAD for speech detection
+            vad_pre_buffer_duration: Seconds of audio to keep before speech starts
         """
         logger.info("Initializing ParakeetASR...")
         
@@ -54,9 +56,26 @@ class ParakeetASR:
         self.transcription_callback = transcription_callback
         self.device = device
         self.use_vad = use_vad
+        self.vad_pre_buffer_duration = vad_pre_buffer_duration
         
+        # Initialize VAD if enabled. This may override chunk_size.
+        self.vad = None
+        if self.use_vad:
+            logger.info("Initializing Silero VAD...")
+            vad_chunk_size = 512  # Silero VAD requires specific chunk sizes
+            self.chunk_size = vad_chunk_size
+            self.vad = SileroRealTime(
+                sample_rate=self.sample_rate,
+                window_size_samples=vad_chunk_size,
+                threshold_on=0.4,
+                threshold_off=0.8,
+                min_speech_duration_ms=100,
+                min_silence_duration_ms=500,
+                standalone=False
+            )
+
         # Calculate number of chunks in window
-        self.chunks_in_window = int(window_duration * sample_rate / chunk_size)
+        self.chunks_in_window = int(window_duration * sample_rate / self.chunk_size)
         logger.info(f"Window size: {self.chunks_in_window} chunks")
         
         # Initialize audio
@@ -84,25 +103,15 @@ class ParakeetASR:
             raise
         
         # Buffer for storing audio chunks
-        self.audio_buffer = deque(maxlen=self.chunks_in_window)
         self.buffer_lock = threading.Lock()
-        
-        # Initialize VAD if enabled
-        self.vad = None
         if self.use_vad:
-            logger.info("Initializing Silero VAD...")
-            vad_chunk_size = 512  # Silero VAD requires specific chunk sizes
-            self.chunk_size = vad_chunk_size
-            self.vad = SileroRealTime(
-                sample_rate=self.sample_rate,
-                window_size_samples=vad_chunk_size,
-                threshold_on=0.4,
-                threshold_off=0.8,
-                min_speech_duration_ms=100,
-                min_silence_duration_ms=500,
-                standalone=False
-            )
-
+            self.audio_buffer = deque()  # No maxlen when using VAD
+            # Calculate pre-buffer size in chunks
+            pre_buffer_chunks = int(self.vad_pre_buffer_duration * self.sample_rate / self.chunk_size) if self.vad_pre_buffer_duration > 0 else 0
+            self.pre_speech_buffer = deque(maxlen=pre_buffer_chunks)
+        else:
+            self.audio_buffer = deque(maxlen=self.chunks_in_window)
+        
         logger.info("Initialization complete")
         
     def _audio_callback(self, in_data, frame_count, time_info, status):
@@ -116,15 +125,28 @@ class ParakeetASR:
                     audio_chunk_np = np.frombuffer(in_data, dtype=np.float32)
                     is_speech = self.vad.process_chunk(audio_chunk_np)
                     
-                    if is_speech:
-                        with self.buffer_lock:
+                    with self.buffer_lock:
+                        if is_speech:
+                            # If audio_buffer is empty, it's the start of a new utterance.
+                            # Prepend the pre-speech buffer.
+                            if not self.audio_buffer:
+                                logger.debug(f"Speech start detected. Prepending {len(self.pre_speech_buffer)} chunks.")
+                                self.audio_buffer.extend(list(self.pre_speech_buffer))
+                                self.pre_speech_buffer.clear()
+                            
                             self.audio_buffer.append(in_data)
-                    elif len(self.audio_buffer) > 0:
-                        # Speech has ended, process the buffer
-                        logger.debug("VAD detected end of speech, processing buffer...")
-                        threading.Thread(target=self._process_audio_buffer, daemon=True).start()
-                        with self.buffer_lock:
-                            self.audio_buffer.clear()
+                        else:  # Not speech
+                            # If buffer has content, speech just ended
+                            if self.audio_buffer:
+                                buffer_copy = list(self.audio_buffer)
+                                self.audio_buffer.clear()
+                                
+                                if buffer_copy:
+                                    logger.debug(f"VAD detected end of speech, processing buffer of {len(buffer_copy)} chunks...")
+                                    threading.Thread(target=self._process_audio_buffer, args=(buffer_copy,), daemon=True).start()
+
+                            # Keep filling the pre-speech buffer during silence
+                            self.pre_speech_buffer.append(in_data)
 
                 else: # Original behavior without VAD
                     with self.buffer_lock:
@@ -142,55 +164,65 @@ class ParakeetASR:
         
         return (in_data, pyaudio.paContinue)
 
-    def _process_audio_buffer(self):
+    def _process_audio_buffer(self, audio_data_list: Optional[List[bytes]] = None):
         """Process the current audio buffer and transcribe audio."""
         try:
-            with self.buffer_lock:
-                # Combine chunks into a single audio array
-                audio_data = b''.join(self.audio_buffer)
-                
-                # Convert to numpy array
-                audio_np = np.frombuffer(audio_data, dtype=np.float32)
-                
-                # Reshape if stereo
-                if self.channels == 2:
-                    audio_np = audio_np.reshape(-1, 2).mean(axis=1)
-                
-                # Convert to torch tensor
-                audio_tensor = torch.from_numpy(audio_np.copy()).to(self.device)
-                
-                logger.debug("Processing audio with Parakeet...")
-                
-                # Transcribe with timestamps
-                hypotheses = self.model.transcribe(
-                    audio=audio_tensor,
-                    return_hypotheses=True
-                )
+            if audio_data_list:
+                # Using data passed from VAD
+                audio_data = b''.join(audio_data_list)
+            else:
+                # Using the shared buffer (non-VAD rolling window)
+                with self.buffer_lock:
+                    # Combine chunks into a single audio array
+                    if not self.audio_buffer:
+                        return
+                    audio_data = b''.join(self.audio_buffer)
 
-                # For transducer models, the output can be a tuple
-                if isinstance(hypotheses, tuple) and len(hypotheses) > 0:
-                    hypotheses = hypotheses[0]
-                
-                if hypotheses and len(hypotheses) > 0:
-                    hypothesis = hypotheses[0]
-                    word_timestamps = []
+            if not audio_data:
+                return
 
-                    if hasattr(hypothesis, 'timestamp') and isinstance(hypothesis.timestamp, dict):
-                        word_timestamps = hypothesis.timestamp.get('word', [])
-                    
-                    # Create result dictionary
-                    transcription_result = {
-                        'timestamp': time.time(),
-                        'text': hypothesis.text,
-                        'word_timestamps': word_timestamps
-                    }
-                    
-                    logger.debug(f"Transcription: {hypothesis.text}")
-                    
-                    # Call callback if provided
-                    if self.transcription_callback:
-                        self.transcription_callback(transcription_result)
+            # Convert to numpy array
+            audio_np = np.frombuffer(audio_data, dtype=np.float32)
+            
+            # Reshape if stereo
+            if self.channels == 2:
+                audio_np = audio_np.reshape(-1, 2).mean(axis=1)
+            
+            # Convert to torch tensor
+            audio_tensor = torch.from_numpy(audio_np.copy()).to(self.device)
+            
+            logger.debug("Processing audio with Parakeet...")
+            
+            # Transcribe with timestamps
+            hypotheses = self.model.transcribe(
+                audio=audio_tensor,
+                return_hypotheses=True
+            )
+
+            # For transducer models, the output can be a tuple
+            if isinstance(hypotheses, tuple) and len(hypotheses) > 0:
+                hypotheses = hypotheses[0]
+            
+            if hypotheses and len(hypotheses) > 0:
+                hypothesis = hypotheses[0]
+                word_timestamps = []
+
+                if hasattr(hypothesis, 'timestamp') and isinstance(hypothesis.timestamp, dict):
+                    word_timestamps = hypothesis.timestamp.get('word', [])
                 
+                # Create result dictionary
+                transcription_result = {
+                    'timestamp': time.time(),
+                    'text': hypothesis.text,
+                    'word_timestamps': word_timestamps
+                }
+                
+                logger.debug(f"Transcription: {hypothesis.text}")
+                
+                # Call callback if provided
+                if self.transcription_callback:
+                    self.transcription_callback(transcription_result)
+            
         except Exception as e:
             logger.error(f"Error processing audio: {str(e)}")
 
@@ -285,7 +317,8 @@ if __name__ == "__main__":
         asr = ParakeetASR(
             window_duration=3.0,  # 3 second window
             transcription_callback=transcription_callback,
-            use_vad=True  # Enable VAD
+            use_vad=True,  # Enable VAD
+            vad_pre_buffer_duration=0.5  # Add 0.5 seconds of audio before speech starts
         )
         
         print("\nStarting audio recording and transcription...")
