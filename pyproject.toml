@@ -1,0 +1,20 @@
+[project]
+name = "voicelatency"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "silero-vad>=5.1.2",
+    "pyaudio",
+    "funasr",
+    "huggingface_hub",
+    "torchaudio",
+    "chatterbox-tts>=0.1.2",
+    "sounddevice>=0.4.6",
+    "sesame",
+    "kokoro",
+    "nemo_toolkit[asr]>=1.21.0",
+    "torch>=2.0.0",
+    "numpy>=1.20.0"
+]
