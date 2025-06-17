@@ -145,7 +145,7 @@ class UnslothDDPOConfig(DDPOConfig):
     )
     def __init__(
         self,
-        exp_name = 'conversation_manager',
+        exp_name = 'server',
         run_name = '',
         seed = 3407,
         log_with = None,
