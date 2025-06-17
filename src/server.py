@@ -18,6 +18,7 @@ import soundfile as sf
 import gradio as gr
 from gradio.routes import mount_gradio_app
 import time
+from datetime import datetime
 import base64
 import os
 
@@ -131,9 +132,16 @@ def create_app() -> FastAPI:
 
     @app.post("/llm/query", tags=["LLM"])
     async def llm_query(payload: LLMRequest):
+        received_at = datetime.utcnow().isoformat() + "Z"
+        t0 = time.perf_counter()
         try:
             response = llm_host.query(payload.prompt, enable_thinking=payload.enable_thinking)
-            return {"response": response}
+            proc_ms = (time.perf_counter() - t0) * 1000.0
+            return {
+                "received_at": received_at,
+                "processing_ms": proc_ms,
+                "response": response,
+            }
         except Exception as exc:
             raise HTTPException(status_code=500, detail=str(exc))
 
@@ -153,6 +161,8 @@ def create_app() -> FastAPI:
 
     @app.post("/asr/transcribe", tags=["ASR"])
     async def asr_transcribe(file: UploadFile = File(...)):
+        received_at = datetime.utcnow().isoformat() + "Z"
+        t0 = time.perf_counter()
         try:
             contents = await file.read()
             data, samplerate = sf.read(io.BytesIO(contents), dtype="float32")
@@ -174,14 +184,22 @@ def create_app() -> FastAPI:
             if isinstance(hypotheses, tuple):
                 hypotheses = hypotheses[0]
             if not hypotheses:
-                return {"text": ""}
+                proc_ms = (time.perf_counter() - t0) * 1000.0
+                return {
+                    "received_at": received_at,
+                    "processing_ms": proc_ms,
+                    "text": "",
+                }
 
             hypothesis = hypotheses[0]
             word_timestamps = []
             if hasattr(hypothesis, "timestamp") and isinstance(hypothesis.timestamp, dict):
                 word_timestamps = hypothesis.timestamp.get("word", [])
 
+            proc_ms = (time.perf_counter() - t0) * 1000.0
             return {
+                "received_at": received_at,
+                "processing_ms": proc_ms,
                 "text": hypothesis.text,
                 "word_timestamps": [
                     {"word": w.word, "start": w.start, "end": w.end} for w in word_timestamps
@@ -190,8 +208,10 @@ def create_app() -> FastAPI:
         except Exception as exc:
             raise HTTPException(status_code=500, detail=str(exc))
 
-    @app.post("/pipeline/process", tags=["Pipeline"], response_model=PipelineResponse)
+    @app.post("/pipeline/process", tags=["Pipeline"])
     async def pipeline_process(file: UploadFile = File(...)):
+        received_at = datetime.utcnow().isoformat() + "Z"
+        t0_api = time.perf_counter()
         try:
             contents = await file.read()
             data, samplerate = sf.read(io.BytesIO(contents), dtype="float32")
@@ -200,7 +220,10 @@ def create_app() -> FastAPI:
 
             transcription, llm_resp, wav_bytes, lat = _process_pipeline(data, samplerate)
             encoded_audio = base64.b64encode(wav_bytes).decode("utf-8")
+            api_proc_ms = (time.perf_counter() - t0_api) * 1000.0
             return {
+                "received_at": received_at,
+                "processing_ms": api_proc_ms,
                 "transcription": transcription,
                 "llm_response": llm_resp,
                 "audio_base64": encoded_audio,
