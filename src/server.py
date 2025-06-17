@@ -302,46 +302,106 @@ def create_app() -> FastAPI:
                 conv_status = gr.Markdown("**Click start to open the real-time conversation (mic required).**")
                 start_btn = gr.Button("Start Conversation", variant="primary")
                 stop_btn = gr.Button("Stop Conversation")
-                chatbot = gr.Chatbot()
-                chat_state = gr.State(0)  # last index consumed
+                refresh_btn = gr.Button("🔄 Manual Refresh (Debug)", variant="secondary")
+                
+                # Debug info
+                debug_info = gr.Textbox(label="Debug Info", interactive=False)
+                
+                chatbot = gr.Chatbot(height=400, show_copy_button=True)
+                conversation_history = gr.State([])  # Store conversation history in Gradio state
+
+                def _get_debug_info():
+                    """Get debug information about queue status."""
+                    try:
+                        queue_size = cm.ui_queue.qsize()
+                        is_running = cm.is_running
+                        chat_hist_len = len(cm.chat_history)
+                        return f"Queue size: {queue_size}, Running: {is_running}, Chat history: {chat_hist_len}"
+                    except Exception as e:
+                        return f"Error getting debug info: {e}"
 
                 def _start_conv():
+                    print("DEBUG: _start_conv called")
                     if not cm.is_running:
-                        cm.start()
-                        return "🟢 Conversation running. Speak into the microphone."  # status text
-                    return "⚠️ Conversation already running."
+                        print("DEBUG: Starting conversation manager...")
+                        cm.start()  # This will clear queues and chat history
+                        return (
+                            "🟢 Conversation running. Speak into the microphone.",
+                            [],  # reset conversation history
+                            [],  # clear chatbot
+                            _get_debug_info()  # update debug info
+                        )
+                    print("DEBUG: Conversation manager already running")
+                    return (
+                        "⚠️ Conversation already running.",
+                        gr.update(),  # don't change conversation history
+                        gr.update(),  # don't change chatbot
+                        _get_debug_info()  # update debug info
+                    )
 
                 def _stop_conv():
+                    print("DEBUG: _stop_conv called")
                     if cm.is_running:
+                        print("DEBUG: Stopping conversation manager...")
                         cm.stop()
-                        return "🔴 Conversation stopped."
-                    return "Conversation not running."
+                        return "🔴 Conversation stopped.", _get_debug_info()
+                    print("DEBUG: Conversation manager was not running")
+                    return "Conversation not running.", _get_debug_info()
 
-                def _poll_conv(last_idx: int):
-                    """Return updated conversation history for the chatbot.
-                    Gradio only re-renders a component if its value **object** changes.
-                    Therefore we must make sure to pass a *new* list instance whenever
-                    there is fresh content; otherwise the UI will not update even though
-                    the underlying list has grown.  We also keep track of the last index
-                    we have already served to avoid unnecessary list copying when there
-                    is no new data.
-                    """
+                def _poll_ui_queue(current_history):
+                    """Poll the UI queue for new conversation items and update the chatbot."""
+                    try:
+                        print("DEBUG: _poll_ui_queue called")
+                        
+                        if not cm.is_running:
+                            print("DEBUG: Conversation not running, returning no update")
+                            return gr.update(), current_history, _get_debug_info()
 
-                    # No new content -> no update
-                    if last_idx >= len(cm.chat_history):
-                        return gr.update(), last_idx
+                        # Check for new items in the UI queue
+                        new_items = []
+                        try:
+                            while True:
+                                ui_item = cm.ui_queue.get_nowait()
+                                new_items.append(ui_item)
+                                print(f"DEBUG: Got UI item: {ui_item}")
+                        except:
+                            pass  # Queue is empty, which is expected
+                        
+                        if not new_items:
+                            print("DEBUG: No new UI items, returning no update")
+                            return gr.update(), current_history, _get_debug_info()
+                        
+                        # Add new items to conversation history
+                        updated_history = current_history.copy() if current_history else []
+                        for item in new_items:
+                            conversation_pair = [item['user_text'], item['assistant_text']]
+                            updated_history.append(conversation_pair)
+                            print(f"DEBUG: Added conversation pair: {conversation_pair}")
+                        
+                        print(f"DEBUG: Updating chatbot with {len(updated_history)} total conversations")
+                        return updated_history, updated_history, _get_debug_info()
+                    
+                    except Exception as e:
+                        print(f"ERROR in _poll_ui_queue: {e}")
+                        return gr.update(), current_history, _get_debug_info()
 
-                    # There is new content; return a **copy** of the full history so it
-                    # is recognised as a changed value by Gradio.
-                    updated_history = list(cm.chat_history)
-                    new_last = len(updated_history)
-                    return updated_history, new_last
+                start_btn.click(
+                    _start_conv, 
+                    outputs=[conv_status, conversation_history, chatbot, debug_info]
+                )
+                stop_btn.click(
+                    _stop_conv, 
+                    outputs=[conv_status, debug_info]
+                )
+                
+                # Manual refresh for debugging
+                refresh_btn.click(
+                    _poll_ui_queue,
+                    inputs=[conversation_history],
+                    outputs=[chatbot, conversation_history, debug_info]
+                )
 
-                start_btn.click(_start_conv, outputs=conv_status)
-                stop_btn.click(_stop_conv, outputs=conv_status)
-
-                timer = gr.Timer(value=1.0, active=True, render=False)
-                timer.tick(fn=_poll_conv, inputs=chat_state, outputs=[chatbot, chat_state])
+                print("DEBUG: Manual refresh configured - use the refresh button to test")
 
         return demo
 

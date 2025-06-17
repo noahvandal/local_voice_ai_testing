@@ -29,6 +29,7 @@ class ConversationManager:
         # Queues for inter-thread communication
         self.transcription_queue = queue.Queue()
         self.response_queue = queue.Queue()
+        self.ui_queue = queue.Queue()  # Separate queue for UI updates
         
         # Thread control
         self.is_running = False
@@ -60,7 +61,7 @@ class ConversationManager:
         self.request_counter = 0
         self.request_lock = threading.Lock()
 
-        # Chat history for external UI streaming
+        # Chat history for external UI streaming (keeping for backward compatibility)
         self.chat_history: list[tuple[str, str]] = []
 
     def _get_next_request_id(self) -> int:
@@ -105,6 +106,19 @@ class ConversationManager:
         
         if cleared_count > 0:
             logger.debug(f"Cleared {cleared_count} pending response(s) from queue.")
+
+    def _clear_ui_queue(self):
+        """Clear all pending UI updates from the UI queue."""
+        cleared_count = 0
+        try:
+            while True:
+                self.ui_queue.get_nowait()
+                cleared_count += 1
+        except queue.Empty:
+            pass
+        
+        if cleared_count > 0:
+            logger.debug(f"Cleared {cleared_count} pending UI update(s) from queue.")
 
     def _stop_tts_playback(self):
         """Stops the TTS audio playback. Must be called with playback_state lock held."""
@@ -166,11 +180,23 @@ class ConversationManager:
                     'timestamp': time.time()
                 }
                 
-                # Add to response queue
+                # Add to response queue for audio playback
                 self.response_queue.put(response_item)
                 
-                # Append to chat history for UI polling
+                # Create UI item (without heavy audio tensor)
+                ui_item = {
+                    'request_id': request_id,
+                    'user_text': transcribed_text,
+                    'assistant_text': llm_response,
+                    'timestamp': time.time()
+                }
+                
+                # Add to UI queue for real-time updates
+                self.ui_queue.put(ui_item)
+                
+                # Append to chat history for backward compatibility
                 self.chat_history.append((transcribed_text, llm_response))
+                logger.info(f"[REQ-{request_id}] Added to chat history and UI queue. Total messages: {len(self.chat_history)}")
                 
             except queue.Empty:
                 continue
@@ -255,6 +281,11 @@ class ConversationManager:
             logger.info("Starting Conversation Manager...")
             self.is_running = True
             
+            # Clear queues and chat history for fresh start
+            self._clear_response_queue()
+            self._clear_ui_queue()
+            self.chat_history.clear()
+            
             # Start all threads
             self.threads['asr'] = threading.Thread(target=self._asr_thread, daemon=True)
             self.threads['llm_tts'] = threading.Thread(target=self._llm_tts_thread, daemon=True)
@@ -264,7 +295,9 @@ class ConversationManager:
                 thread.start()
                 logger.info(f"{thread_name.upper()} thread started.")
             
-            logger.info("Conversation Manager started.")
+            logger.info("Conversation Manager started successfully.")
+        else:
+            logger.warning("Conversation Manager is already running.")
 
     def stop(self):
         """Stops the conversation manager and cleans up resources."""
@@ -285,7 +318,9 @@ class ConversationManager:
                     if thread.is_alive():
                         logger.warning(f"{thread_name} thread did not stop gracefully.")
 
-            logger.info("Conversation Manager stopped.")
+            logger.info("Conversation Manager stopped successfully.")
+        else:
+            logger.warning("Conversation Manager was not running.")
 
 def main():
     """Main function to run the conversation manager."""
