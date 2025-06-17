@@ -12,7 +12,7 @@ from typing import Optional, Dict, Any
 
 from src.asr.nvidia_parakeet_asr import ParakeetASR
 from src.llm.llm_host import HuggingFaceLLMHost
-from src.tts.kokoro_text_to_speech import TextToSpeech
+from src.tts.kokoro_text_to_speech import KokoroTextToSpeech
 
 # Setup logging
 logging.basicConfig(level=logging.INFO)
@@ -44,7 +44,7 @@ class ConversationManager:
             model_name="unsloth/Qwen3-1.7B-unsloth-bnb-4bit",
             system_prompt="You are a voice assistant. Be friendly, helpful, and concise in your responses."
         )
-        self.tts = TextToSpeech()
+        self.tts = KokoroTextToSpeech()
         
         # State management for TTS playback
         self.playback_state = {

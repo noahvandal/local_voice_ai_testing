@@ -10,7 +10,7 @@ from typing import Optional, Dict, Any
 from pathlib import Path
 from kokoro import KPipeline
 
-class TextToSpeech:
+class KokoroTextToSpeech:
     def __init__(
         self,
         lang_code: str = 'a',  # 'a' for American English
@@ -91,7 +91,7 @@ class TextToSpeech:
 def main():
     """Interactive text-to-speech conversion."""
     print("Initializing Text-to-Speech system...")
-    tts = TextToSpeech(
+    tts = KokoroTextToSpeech(
         lang_code='a',  # American English
         speed=1.0,
         voice='af_heart'

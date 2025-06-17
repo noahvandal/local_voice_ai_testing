@@ -15,7 +15,7 @@ class HuggingFaceLLMHost:
     provides an interface to send queries to the model.
     """
 
-    def __init__(self, model_name: str = "Qwen/Qwen3-1.7B", use_unsloth: bool = False, always_use_thinking: bool = False, system_prompt: str = None):
+    def __init__(self, model_name: str = "unsloth/Qwen3-1.7B-unsloth-bnb-4bit", use_unsloth: bool = False, always_use_thinking: bool = False, system_prompt: str = None):
         """
         Initializes the LLM host.
 

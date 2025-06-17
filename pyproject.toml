@@ -20,5 +20,9 @@ dependencies = [
     "transformers>=4.51.0",
     "accelerate",
     "bitsandbytes",
-    "unsloth"
+    "unsloth",
+    "fastapi",
+    "gradio>=4.28.0",
+    "soundfile",
+    "uvicorn[standard]"
 ]
