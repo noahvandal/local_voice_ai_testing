@@ -52,6 +52,9 @@ class ConversationManager:
             'current_request_id': None,
             'lock': threading.Lock()
         }
+
+        # Event used to interrupt ongoing playback from another thread
+        self.stop_playback_event = threading.Event()
         
         # Request tracking
         self.request_counter = 0
@@ -102,6 +105,8 @@ class ConversationManager:
 
     def _stop_tts_playback(self):
         """Stops the TTS audio playback. Must be called with playback_state lock held."""
+        # Signal any playback loop to exit and stop stream
+        self.stop_playback_event.set()
         sd.stop()
         self.playback_state['is_playing'] = False
         self.playback_state['current_request_id'] = None
@@ -204,14 +209,28 @@ class ConversationManager:
         logger.info("Audio playback thread stopped.")
 
     def _play_audio_blocking(self, audio_tensor: torch.Tensor, sample_rate: int, request_id: int):
-        """Play audio and block until finished."""
+        """Play audio in a non-blocking manner but keep this function synchronous so the
+        playback thread waits only for the *duration* of the clip or an explicit stop request.
+        This avoids dead-locking in `sd.wait()` when `sd.stop()` is called from another thread.
+        """
         try:
             audio_np = audio_tensor.squeeze().cpu().numpy()
-            sd.play(audio_np, samplerate=sample_rate)
-            sd.wait()  # Block until playback is finished
-            
-            logger.info(f"[REQ-{request_id}] TTS playback finished naturally.")
-            
+
+            # Reset the stop flag and start playback (non-blocking)
+            self.stop_playback_event.clear()
+            sd.play(audio_np, samplerate=sample_rate, blocking=False)
+
+            # Wait for natural completion or external stop request
+            duration_sec = len(audio_np) / float(sample_rate)
+            start_time = time.time()
+            while time.time() - start_time < duration_sec:
+                if self.stop_playback_event.is_set():
+                    logger.info(f"[REQ-{request_id}] Playback interrupted early.")
+                    break
+                time.sleep(0.05)
+
+            logger.info(f"[REQ-{request_id}] TTS playback finished.")
+
         except Exception as e:
             logger.error(f"[REQ-{request_id}] Error during audio playback: {e}")
         finally:
@@ -220,6 +239,8 @@ class ConversationManager:
                 if self.playback_state['current_request_id'] == request_id:
                     self.playback_state['is_playing'] = False
                     self.playback_state['current_request_id'] = None
+            # Ensure the stop flag is cleared for next playback
+            self.stop_playback_event.clear()
 
     def start(self):
         """Starts the conversation manager and its components."""
