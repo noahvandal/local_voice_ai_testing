@@ -158,6 +158,16 @@ def create_app() -> FastAPI:
             data, samplerate = sf.read(io.BytesIO(contents), dtype="float32")
             if data.ndim > 1:
                 data = data.mean(axis=1)
+
+            # Ensure audio is at 16kHz for the ASR model
+            if samplerate != 16000:
+                factor = 16000 / samplerate
+                data = np.interp(
+                    np.arange(0, len(data) * factor) / factor,
+                    np.arange(len(data)),
+                    data,
+                ).astype(np.float32)
+                samplerate = 16000
             audio_tensor = torch.from_numpy(data).to(ASR_DEVICE)
 
             hypotheses = asr_model.transcribe(audio=audio_tensor, return_hypotheses=True)
@@ -211,6 +221,11 @@ def create_app() -> FastAPI:
     def _gradio_asr(audio):
         if audio is None:
             return ""
+        if isinstance(audio, dict):
+            # some gradio versions send dict
+            audio = audio.get('data')
+        if audio is None:
+            return ""
         sample_rate, data = audio
         if sample_rate != 16000:
             factor = 16000 / sample_rate
@@ -255,13 +270,17 @@ def create_app() -> FastAPI:
                 tts_btn.click(_gradio_tts, inputs=tts_text, outputs=tts_audio)
             with gr.Tab("ASR"):
                 asr_audio_in = gr.Audio(sources=["microphone", "upload"], type="numpy", label="Record or upload audio")
+                cached_audio = gr.State()
+                asr_audio_in.change(lambda a: a, inputs=asr_audio_in, outputs=cached_audio, queue=False)
                 asr_btn = gr.Button("Transcribe")
                 asr_out = gr.Textbox(label="Transcription")
-                asr_btn.click(_gradio_asr, inputs=asr_audio_in, outputs=asr_out)
+                asr_btn.click(_gradio_asr, inputs=cached_audio, outputs=asr_out)
             with gr.Tab("Conversation"):
                 conv_status = gr.Markdown("**Click start to open the real-time conversation (mic required).**")
                 start_btn = gr.Button("Start Conversation", variant="primary")
                 stop_btn = gr.Button("Stop Conversation")
+                chatbot = gr.Chatbot()
+                chat_state = gr.State(0)  # last index consumed
 
                 def _start_conv():
                     if not cm.is_running:
@@ -275,8 +294,31 @@ def create_app() -> FastAPI:
                         return "🔴 Conversation stopped."
                     return "Conversation not running."
 
+                def _poll_conv(last_idx: int):
+                    """Return updated conversation history for the chatbot.
+                    Gradio only re-renders a component if its value **object** changes.
+                    Therefore we must make sure to pass a *new* list instance whenever
+                    there is fresh content; otherwise the UI will not update even though
+                    the underlying list has grown.  We also keep track of the last index
+                    we have already served to avoid unnecessary list copying when there
+                    is no new data.
+                    """
+
+                    # No new content -> no update
+                    if last_idx >= len(cm.chat_history):
+                        return gr.update(), last_idx
+
+                    # There is new content; return a **copy** of the full history so it
+                    # is recognised as a changed value by Gradio.
+                    updated_history = list(cm.chat_history)
+                    new_last = len(updated_history)
+                    return updated_history, new_last
+
                 start_btn.click(_start_conv, outputs=conv_status)
                 stop_btn.click(_stop_conv, outputs=conv_status)
+
+                timer = gr.Timer(value=1.0, active=True, render=False)
+                timer.tick(fn=_poll_conv, inputs=chat_state, outputs=[chatbot, chat_state])
 
         return demo
 

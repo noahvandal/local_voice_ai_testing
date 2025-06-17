@@ -60,6 +60,9 @@ class ConversationManager:
         self.request_counter = 0
         self.request_lock = threading.Lock()
 
+        # Chat history for external UI streaming
+        self.chat_history: list[tuple[str, str]] = []
+
     def _get_next_request_id(self) -> int:
         """Generate a unique request ID."""
         with self.request_lock:
@@ -156,6 +159,7 @@ class ConversationManager:
                 # Create response item
                 response_item = {
                     'request_id': request_id,
+                    'user_text': transcribed_text,
                     'text': llm_response,
                     'audio_tensor': tts_output.get('tts_speech'),
                     'sample_rate': tts_output.get('sample_rate'),
@@ -164,6 +168,9 @@ class ConversationManager:
                 
                 # Add to response queue
                 self.response_queue.put(response_item)
+                
+                # Append to chat history for UI polling
+                self.chat_history.append((transcribed_text, llm_response))
                 
             except queue.Empty:
                 continue
