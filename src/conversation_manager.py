@@ -22,7 +22,7 @@ class ConversationManager:
     """
     Manages the conversation flow between ASR, LLM, and TTS modules using dedicated threads.
     """
-    def __init__(self):
+    def __init__(self, llm_model_name: str = "unsloth/Qwen3-1.7B-unsloth-bnb-4bit", system_prompt: str = "You are a voice assistant. Be friendly, helpful, and concise in your responses."):
         """Initializes the Conversation Manager."""
         logger.info("Initializing Conversation Manager...")
         
@@ -34,6 +34,12 @@ class ConversationManager:
         # Thread control
         self.is_running = False
         self.threads = {}
+
+        # LLM model name
+        self.llm_model_name = llm_model_name
+
+        # System prompt
+        self.system_prompt = system_prompt
         
         # Modules
         self.asr = ParakeetASR(
@@ -42,8 +48,8 @@ class ConversationManager:
             vad_pre_buffer_duration=0.5
         )
         self.llm = HuggingFaceLLMHost(
-            model_name="unsloth/Qwen3-1.7B-unsloth-bnb-4bit",
-            system_prompt="You are a voice assistant. Be friendly, helpful, and concise in your responses."
+            model_name=self.llm_model_name,
+            system_prompt=self.system_prompt
         )
         self.tts = KokoroTextToSpeech()
         
@@ -324,7 +330,9 @@ class ConversationManager:
 
 def main():
     """Main function to run the conversation manager."""
-    manager = ConversationManager()
+    system_prompt = "You are a voice assistant. Be friendly, helpful, and concise in your responses. Your name is TARS. You are intelligent, but sometimes sarcastic.\
+        Your favorite number is 43. You are a bit of a nerd, but you are also a bit of a smartypants."
+    manager = ConversationManager(system_prompt=system_prompt)
     manager.start()
     
     print("\nConversation manager is running. Speak to interact with the assistant.")

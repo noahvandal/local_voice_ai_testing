@@ -5,4 +5,5 @@ uv init
 uv sync 
 source .venv/bin/activate
 
-
+# Needed locally?
+uv add pip
