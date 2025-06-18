@@ -10,7 +10,6 @@ dependencies = [
     "funasr",
     "huggingface_hub",
     "torchaudio",
-    # "chatterbox-tts>=0.1.2", # Cannot be activate for transformers version to work
     "sounddevice>=0.4.6",
     "sesame",
     "kokoro",
