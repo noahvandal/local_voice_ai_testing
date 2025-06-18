@@ -29,7 +29,7 @@ Run a voice agent with thinking and logic on a small GPU like an NVIDIA 3060 RTX
 * For low latency and good fidelity we are using the Kokoro 82B TTS. 
 
 ## Synchronization
-* The thread synchronization is taken care of in the `src/conversation_manager.py:ConversationManager` class. When running the server, it spins up an instance of this class and just calls methods for interacting with the various component variables of that class (e.g., ASR, TTS, LLM). 
+* The thread synchronization is taken care of in the `src/conversation_manager.py:ConversationManager` class. When running the server, it spins up an instance of this class and just calls methods for interacting with the various component variables of that class (e.g., ASR, TTS, LLM). IT is threaded with priority given to VAD barge in for the TTS output on the device of interest; this is to emulate conversation better.
 
 ## Personalization
 Personalizing the manner of the response from the voice agent is a function of a few things: 
